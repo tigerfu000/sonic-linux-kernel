@@ -1,0 +1,132 @@
+From 1c52b8c954aad1c44dd14fc8727c2b3592572172 Mon Sep 17 00:00:00 2001
+From: tiger_fu <tiger_fu@edge-core.com>
+Date: Wed, 25 Sep 2024 07:17:26 +0000
+Subject: [PATCH] Add platform specific system reboot when kernel reboot
+
+ This patch only adds a function pointer and the function pointer will
+ be called when it is not null in kernel reboot code path.
+ If there is the requirement to execute platform specific system reset
+ for kernel reboot, the function pointer can be used.
+
+ Note that the platform specific reboot function does not cover 'kexec reboot'.
+---
+ include/linux/reboot.h |  2 +-
+ kernel/kexec_core.c    |  2 +-
+ kernel/panic.c         | 16 ++++++++++++++++
+ kernel/reboot.c        | 22 ++++++++++++++++++++--
+ 4 files changed, 38 insertions(+), 4 deletions(-)
+
+diff --git a/include/linux/reboot.h b/include/linux/reboot.h
+index 3734cd8f3..8a8094989 100644
+--- a/include/linux/reboot.h
++++ b/include/linux/reboot.h
+@@ -66,7 +66,7 @@ extern void machine_crash_shutdown(struct pt_regs *);
+  * Architecture independent implemenations of sys_reboot commands.
+  */
+ 
+-extern void kernel_restart_prepare(char *cmd);
++extern void kernel_restart_prepare(char *cmd, bool is_kexec_reboot);
+ extern void kernel_restart(char *cmd);
+ extern void kernel_halt(void);
+ extern void kernel_power_off(void);
+diff --git a/kernel/kexec_core.c b/kernel/kexec_core.c
+index 2934cb5c9..420b2933e 100644
+--- a/kernel/kexec_core.c
++++ b/kernel/kexec_core.c
+@@ -1170,7 +1170,7 @@ int kernel_kexec(void)
+ #endif
+ 	{
+ 		kexec_in_progress = true;
+-		kernel_restart_prepare("kexec reboot");
++		kernel_restart_prepare("kexec reboot", true);
+ 		migrate_to_reboot_cpu();
+ 
+ 		/*
+diff --git a/kernel/panic.c b/kernel/panic.c
+index bc39e2b27..531cb44e8 100644
+--- a/kernel/panic.c
++++ b/kernel/panic.c
+@@ -133,6 +133,8 @@ static long no_blink(int state)
+ long (*panic_blink)(int state);
+ EXPORT_SYMBOL(panic_blink);
+ 
++extern void (*platform_specific_op_in_reboot_fp)(void);
++
+ /*
+  * Stop ourself in panic -- architecture code may override this
+  */
+@@ -260,6 +262,20 @@ void panic(const char *fmt, ...)
+ 		panic_on_warn = 0;
+ 	}
+ 
++	/*
++	 * When kdump is enabled, the machine_kexec() will be executed to
++	 * switch the device from crashed kernel to captured kernel.
++	 * The crash information will be collected and the device will be rebooted
++	 * in the captured kernel.
++	 * Therefore, does not need to apply the custom reboot procedure when device
++	 * is crashed with kdump feature enabled.
++	 */
++	if (!kexec_crash_image && platform_specific_op_in_reboot_fp)
++	{
++		pr_emerg("Kernel panic... Call platform custom reboot\n");
++		platform_specific_op_in_reboot_fp();
++	}
++
+ 	/*
+ 	 * Disable local interrupts. This will prevent panic_smp_self_stop
+ 	 * from deadlocking the first cpu that invokes the panic, since
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+index af6f23d8b..7ea4aa726 100644
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -53,6 +53,13 @@ int reboot_force;
+ void (*pm_power_off_prepare)(void);
+ EXPORT_SYMBOL_GPL(pm_power_off_prepare);
+ 
++/*
++ * If the function pointer is set, which means that this platform
++ * should trigger the custom reboot function by software.
++ */
++void (*platform_specific_op_in_reboot_fp)(void);
++EXPORT_SYMBOL(platform_specific_op_in_reboot_fp);
++
+ /**
+  *	emergency_restart - reboot the system
+  *
+@@ -68,11 +75,22 @@ void emergency_restart(void)
+ }
+ EXPORT_SYMBOL_GPL(emergency_restart);
+ 
+-void kernel_restart_prepare(char *cmd)
++void kernel_restart_prepare(char *cmd, bool is_kexec_reboot)
+ {
+ 	blocking_notifier_call_chain(&reboot_notifier_list, SYS_RESTART, cmd);
+ 	system_state = SYSTEM_RESTART;
+ 	usermodehelper_disable();
++	/*
++	 * For the device which need to execute custom reboot procedure.
++	 * We run the specific operation here before rebooting.
++	 *
++	 * Note thate this custom reboot procedure is not expected to
++	 * apply when 'kexec reboot'. Therefore, checking if the kernel restart
++	 * is triggered by 'kexec' before executing the specific operation.
++	 */
++	if (!is_kexec_reboot && platform_specific_op_in_reboot_fp)
++		platform_specific_op_in_reboot_fp();
++
+ 	device_shutdown();
+ }
+ 
+@@ -243,7 +261,7 @@ void migrate_to_reboot_cpu(void)
+  */
+ void kernel_restart(char *cmd)
+ {
+-	kernel_restart_prepare(cmd);
++	kernel_restart_prepare(cmd, false);
+ 	migrate_to_reboot_cpu();
+ 	syscore_shutdown();
+ 	if (!cmd)
+-- 
+2.30.2
+
