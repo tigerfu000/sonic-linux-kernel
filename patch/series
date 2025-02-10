@@ -225,6 +225,10 @@ cisco-npu-disable-other-bars.patch
 # Micas patches
 0001-fix-os-crash-caused-by-optoe-when-class-switch.patch
 
+# Edgecore patches for 6.1 kernel
+0001-Add-platform-specific-reboot-op-hook-function.patch
+0002-patch-to-revert-the-platform-specific-reboot-commit.patch
+
 #
 #
 ############################################################

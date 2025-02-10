@@ -1,0 +1,165 @@
+From 41d0739b99b8200f6febea7abceb8695510a7247 Mon Sep 17 00:00:00 2001
+From: tiger_fu <tiger_fu@edge-core.com>
+Date: Mon, 10 Feb 2025 02:26:24 +0000
+Subject: [PATCH] Patch to revert the platform specific reboot hook commit
+
+ This patch will revert the platform specific reboot hook commit for
+ source_rt build. Due to during building source_rt, it will try to patch
+ some of the kernel/panic.c content. And will have conflict due to the
+ that commit.
+ It is a shortage from the SONIC linux kernel building process.
+---
+ ...-Add-platform-specific-system-reboot.patch | 131 ++++++++++++++++++
+ debian/patches-rt/series                      |   1 +
+ 2 files changed, 132 insertions(+)
+ create mode 100644 debian/patches-rt/0000-Revert-Add-platform-specific-system-reboot.patch
+
+diff --git a/debian/patches-rt/0000-Revert-Add-platform-specific-system-reboot.patch b/debian/patches-rt/0000-Revert-Add-platform-specific-system-reboot.patch
+new file mode 100644
+index 000000000..9902ab5ee
+--- /dev/null
++++ b/debian/patches-rt/0000-Revert-Add-platform-specific-system-reboot.patch
+@@ -0,0 +1,131 @@
++From 0ae439941d631d7a84675d23271faa981dc7714e Mon Sep 17 00:00:00 2001
++From: tiger_fu <tiger_fu@edge-core.com>
++Date: Mon, 10 Feb 2025 02:23:12 +0000
++Subject: [PATCH] Revert "[PATCH] Add platform specific system reboot when
++ kernel reboot"
++
++ This patch will revert the platform specific reboot commit for source_rt build.
++ Due to during building source_rt, it will try to patch some of the
++ kernel/panic.c content. And will have conflict due to the commit.
++ It is a shortage from the SONIC linux kernel building process.
++---
++ include/linux/reboot.h |  2 +-
++ kernel/kexec_core.c    |  2 +-
++ kernel/panic.c         | 16 ----------------
++ kernel/reboot.c        | 22 ++--------------------
++ 4 files changed, 4 insertions(+), 38 deletions(-)
++
++diff --git a/include/linux/reboot.h b/include/linux/reboot.h
++index ea625cc88..2b6bb593b 100644
++--- a/include/linux/reboot.h
+++++ b/include/linux/reboot.h
++@@ -164,7 +164,7 @@ void unregister_platform_power_off(void (*power_off)(void));
++  * Architecture independent implemenations of sys_reboot commands.
++  */
++ 
++-extern void kernel_restart_prepare(char *cmd, bool is_kexec_reboot);
+++extern void kernel_restart_prepare(char *cmd);
++ extern void kernel_restart(char *cmd);
++ extern void kernel_halt(void);
++ extern void kernel_power_off(void);
++diff --git a/kernel/kexec_core.c b/kernel/kexec_core.c
++index 22c662a1b..79c012fbb 100644
++--- a/kernel/kexec_core.c
+++++ b/kernel/kexec_core.c
++@@ -1175,7 +1175,7 @@ int kernel_kexec(void)
++ #endif
++ 	{
++ 		kexec_in_progress = true;
++-		kernel_restart_prepare("kexec reboot", true);
+++		kernel_restart_prepare("kexec reboot");
++ 		migrate_to_reboot_cpu();
++ 
++ 		/*
++diff --git a/kernel/panic.c b/kernel/panic.c
++index f5172e0c1..e6c2bf04a 100644
++--- a/kernel/panic.c
+++++ b/kernel/panic.c
++@@ -137,8 +137,6 @@ static long no_blink(int state)
++ long (*panic_blink)(int state);
++ EXPORT_SYMBOL(panic_blink);
++ 
++-extern void (*platform_specific_op_in_reboot_fp)(void);
++-
++ /*
++  * Stop ourself in panic -- architecture code may override this
++  */
++@@ -293,20 +291,6 @@ void panic(const char *fmt, ...)
++ 		panic_on_warn = 0;
++ 	}
++ 
++-	/*
++-	 * When kdump is enabled, the machine_kexec() will be executed to
++-	 * switch the device from crashed kernel to captured kernel.
++-	 * The crash information will be collected and the device will be rebooted
++-	 * in the captured kernel.
++-	 * Therefore, does not need to apply the custom reboot procedure when device
++-	 * is crashed with kdump feature enabled.
++-	 */
++-	if (!kexec_crash_image && platform_specific_op_in_reboot_fp)
++-	{
++-		pr_emerg("Kernel panic... Call platform custom reboot\n");
++-		platform_specific_op_in_reboot_fp();
++-	}
++-
++ 	/*
++ 	 * Disable local interrupts. This will prevent panic_smp_self_stop
++ 	 * from deadlocking the first cpu that invokes the panic, since
++diff --git a/kernel/reboot.c b/kernel/reboot.c
++index d4e13d5ad..6ebef11c8 100644
++--- a/kernel/reboot.c
+++++ b/kernel/reboot.c
++@@ -63,13 +63,6 @@ struct sys_off_handler {
++  */
++ void __weak (*pm_power_off)(void);
++ 
++-/*
++- * If the function pointer is set, which means that this platform
++- * should trigger the custom reboot function by software.
++- */
++-void (*platform_specific_op_in_reboot_fp)(void);
++-EXPORT_SYMBOL(platform_specific_op_in_reboot_fp);
++-
++ /**
++  *	emergency_restart - reboot the system
++  *
++@@ -86,22 +79,11 @@ void emergency_restart(void)
++ }
++ EXPORT_SYMBOL_GPL(emergency_restart);
++ 
++-void kernel_restart_prepare(char *cmd, bool is_kexec_reboot)
+++void kernel_restart_prepare(char *cmd)
++ {
++ 	blocking_notifier_call_chain(&reboot_notifier_list, SYS_RESTART, cmd);
++ 	system_state = SYSTEM_RESTART;
++ 	usermodehelper_disable();
++-	/*
++-	 * For the device which need to execute custom reboot procedure.
++-	 * We run the specific operation here before rebooting.
++-	 *
++-	 * Note thate this custom reboot procedure is not expected to
++-	 * apply when 'kexec reboot'. Therefore, checking if the kernel restart
++-	 * is triggered by 'kexec' before executing the specific operation.
++-	 */
++-	if (!is_kexec_reboot && platform_specific_op_in_reboot_fp)
++-		platform_specific_op_in_reboot_fp();
++-
++ 	device_shutdown();
++ }
++ 
++@@ -283,7 +265,7 @@ static void do_kernel_restart_prepare(void)
++  */
++ void kernel_restart(char *cmd)
++ {
++-	kernel_restart_prepare(cmd, false);
+++	kernel_restart_prepare(cmd);
++ 	do_kernel_restart_prepare();
++ 	migrate_to_reboot_cpu();
++ 	syscore_shutdown();
++-- 
++2.39.5
++
+diff --git a/debian/patches-rt/series b/debian/patches-rt/series
+index 214117158..66772f01e 100644
+--- a/debian/patches-rt/series
++++ b/debian/patches-rt/series
+@@ -1,3 +1,4 @@
++0000-Revert-Add-platform-specific-system-reboot.patch
+ 0001-vduse-Remove-include-of-rwlock.h.patch
+ 0002-signal-Don-t-disable-preemption-in-ptrace_stop-on-PR.patch
+ 0003-sched-Consider-task_struct-saved_state-in-wait_task_.patch
+-- 
+2.39.5
+
